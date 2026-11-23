@@ -2,6 +2,8 @@ package com.hmdp.service.impl;
 
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.bean.copier.CopyOptions;
+import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.RandomUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
@@ -10,11 +12,21 @@ import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
+import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpSession;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import static com.hmdp.utils.RedisConstants.LOGIN_USER_KEY;
+import static com.hmdp.utils.RedisConstants.LOGIN_USER_TTL;
 import static com.hmdp.utils.SystemConstants.USER_NICK_NAME_PREFIX;
 
 /**
@@ -30,7 +42,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
 
     @Resource
-    private UserMapper userMapper;
+    private StringRedisTemplate stringRedisTemplate;
+    @Autowired
+    private RedisTemplate<Object, Object> redisTemplate;
+
 
     @Override
     public Result sendCode(String phone, HttpSession session) {
@@ -60,8 +75,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         //session储存在tomcat里面，通过sessionId找到对应的session
         //浏览器和tomcat通过sessionId一一对应
         //再通过取出code进行验证是否一致
-        session.setAttribute("code",code);
-        session.setAttribute("phone",phone);
+
+        //在redis里面储存
+        stringRedisTemplate.opsForValue().set(RedisConstants.LOGIN_CODE_KEY+phone,
+                code,
+                RedisConstants.LOGIN_CODE_TTL,
+                TimeUnit.MINUTES);
         //发送短信
         log.debug("手机验证码"+code);
 
@@ -71,12 +90,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     @Override
     public Result login(LoginFormDTO loginForm, HttpSession session) {
         String phone = loginForm.getPhone();
+
         //校验手机号
-        if (RegexUtils.isPhoneInvalid(phone)|| !phone.equals(session.getAttribute("phone"))){
+        if (RegexUtils.isPhoneInvalid(phone)){
             return Result.fail("手机号不正确");
         }
         //校验验证码
-        Object cacheCode = session.getAttribute("code").toString();
+        String cacheCode = stringRedisTemplate.opsForValue().get(RedisConstants.LOGIN_CODE_KEY + phone);
 
         if (cacheCode == null ||
                 !cacheCode.equals(loginForm.getCode())){
@@ -86,14 +106,33 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         前提是你的 UserServiceImpl.java
         继承了 MyBatis-Plus 的 ServiceImpl<UserMapper, User>，它自带了这套方法
          */
+
+        //在数据库中查找用户是否存在
         User user = lambdaQuery().eq(User::getPhone, phone).one();
 
         if(user == null){
+            //不存在直接注册
             user = createUserWithPhone(phone);
         }
 
-        session.setAttribute("userDTO", BeanUtil.copyProperties(user, UserDTO.class));
-        return Result.ok();
+        //生成token
+        // 去掉中划线的32位UUID，如 "a1b2c3d4..
+        String token = UUID.randomUUID().toString(true);
+
+        //将user封装成userDTO,并且转化成map
+        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
+        Map<String, Object> userMap = BeanUtil.beanToMap(userDTO, new HashMap<>(),
+                CopyOptions.create()
+                        .setIgnoreNullValue(true)
+                        .setFieldValueEditor((fieldName, fieldValue) ->
+                                fieldValue == null ? null : fieldValue.toString()));
+
+        //将userMap存储在redis中，并实现过期提出设置时间限制
+        stringRedisTemplate.opsForHash().putAll(LOGIN_USER_KEY+token,userMap);
+        stringRedisTemplate.expire(LOGIN_USER_KEY + token,LOGIN_USER_TTL,TimeUnit.MINUTES);
+
+        //给前端返回token，每次在请求头中带着token
+        return Result.ok(token);
         /*
         不需要返回凭证
         拦截器去 session.getAttribute("user") 里查看有没有用户信息。
@@ -117,5 +156,6 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         save(user);
         return user;
     }
+
 
 }

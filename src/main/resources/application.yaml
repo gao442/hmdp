@@ -12,6 +12,7 @@ spring:
     redis:
       host: 127.0.0.1
       port: 6379
+      password: 20060819
       lettuce:
         pool:
           max-active: 10
@@ -26,3 +27,5 @@ mybatis-plus:
 logging:
   level:
     com.hmdp: debug
+
+    #sudo systemctl restart redis-server
