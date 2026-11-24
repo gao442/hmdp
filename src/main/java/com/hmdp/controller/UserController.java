@@ -15,14 +15,7 @@ import org.springframework.web.bind.annotation.*;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpSession;
 
-/**
- * <p>
- * 前端控制器
- * </p>
- *
- * @author 虎哥
- * @since 2021-12-22
- */
+
 @Slf4j
 @RestController
 @RequestMapping("/user")
@@ -60,6 +53,12 @@ public class UserController {
         //实现登录功能
 
         return userService.login(loginForm,session);
+        /*
+        解决集群下多台 Tomcat 内存不互通（Session 共享问题)
+        读写速度极快（纯内存操作）
+        原生支持过期自动清理（TTL）
+
+         */
     }
 
     /**
