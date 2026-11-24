@@ -11,7 +11,9 @@ import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -35,10 +37,11 @@ public class ShopTypeServiceImpl extends ServiceImpl<ShopTypeMapper, ShopType> i
             List<ShopType> shopTypeList = JSONUtil.toList(shopTypeListJson, ShopType.class);
             return shopTypeList;
         }
+
         List<ShopType> shopTypeList =query().orderByAsc("sort").list();
         if(!shopTypeList.isEmpty()){
             String shopTypeJson = JSONUtil.toJsonStr(shopTypeList);
-            stringRedisTemplate.opsForValue().set(RedisConstants.SHOP_TYPE_LIST_CACHE,shopTypeJson);
+            stringRedisTemplate.opsForValue().set(RedisConstants.SHOP_TYPE_LIST_CACHE,shopTypeJson,3600, TimeUnit.MINUTES);
         }
         return shopTypeList;
     }
