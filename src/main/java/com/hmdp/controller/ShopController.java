@@ -33,7 +33,10 @@ public class ShopController {
      */
     @GetMapping("/{id}")
     public Result queryShopById(@PathVariable("id") Long id) {
-        return Result.ok(shopService.getById(id));
+
+        //必须先 @Resource private IShopService shopService;
+        // 再写 shopService.getById(id)
+        return shopService.queryShopById(id);
     }
 
     /**
