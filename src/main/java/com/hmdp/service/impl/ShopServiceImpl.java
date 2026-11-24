@@ -11,6 +11,9 @@ import com.hmdp.utils.RedisConstants;
 import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -43,7 +46,25 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         if (shop == null){
             return Result.fail("店铺不存在");
         }
-        stringRedisTemplate.opsForValue().set(key,JSONUtil.toJsonStr(shop));
+        stringRedisTemplate.opsForValue().set(key,JSONUtil.toJsonStr(shop),RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
+
         return Result.ok(shop);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    //事务保证原子性
+    public Result updateShop(Shop shop) {
+        Long shopId = shop.getId();
+        if (shopId == null){
+            return Result.fail("商铺id不能为空");
+        }
+        this.updateById(shop);
+
+        stringRedisTemplate.delete(RedisConstants.CACHE_SHOP_KEY +shopId);
+        return Result.ok();
+        /*
+        先更新数据库，再删除 Redis 缓存，符合Cache Aside 策略
+         */
     }
 }
