@@ -89,6 +89,58 @@ public class CacheClient {
         return r;
     }
 
+    public <R,ID> R  queryWithMutex(ID id,
+                                    String keyPrefix,
+                                    Class<R> type,
+                                    Function<ID,R> dbFunction,
+                                    Long time,
+                                    TimeUnit unit){
+        if (id == null){
+            return null;
+        }
+        String key = keyPrefix + id ;
+        String RJson = stringRedisTemplate.opsForValue().get(key);
+        if (StrUtil.isNotBlank(RJson)){
+            return JSONUtil.toBean(RJson,type);
+        }
+        if (RJson != null){
+            return null;
+        }
+
+        // 单独定义锁 Key，避免与缓存数据 Key 混用导致释放锁时误删业务缓存
+        String lockKey = "lock:" + key;
+        boolean flag = tryLock(lockKey);
+
+        if (!flag){
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            return queryWithMutex(id,keyPrefix,type,dbFunction,time,unit);
+        }
+        try {
+            String lastRJson = stringRedisTemplate.opsForValue().get(key);
+            if (StrUtil.isNotBlank(lastRJson)){
+                return JSONUtil.toBean(lastRJson,type);
+            }
+            if (lastRJson != null){
+                return null;
+            }
+            R r = dbFunction.apply(id);
+            if (r == null){
+                stringRedisTemplate.opsForValue().set(key, "", RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
+                return null;
+            }
+            this.set(key,r,time,unit);
+            return r;
+        } catch (RuntimeException e) {
+            throw new RuntimeException(e);
+        } finally {
+            releaseLock(lockKey);
+        }
+    }
+
 
     public  <R,ID>R queryWithLogicExpire(ID id,
                                          String keyPrefix,
