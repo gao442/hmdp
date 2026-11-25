@@ -17,4 +17,9 @@ public interface IShopService extends IService<Shop> {
     Result queryShopById(Long id);
 
     Result updateShop(Shop shop);
+
+    /**
+     * 将商铺数据封装逻辑过期时间后写入 Redis（用于缓存预热与异步重建）
+     */
+    void saveShopToRedis(Long id, Long expireSeconds);
 }

@@ -3,6 +3,7 @@ package com.hmdp.service.impl;
 import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.Result;
@@ -10,11 +11,15 @@ import com.hmdp.entity.Shop;
 import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.hmdp.utils.RedisConstants;
+import com.hmdp.utils.RedisData;
 import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -36,8 +41,19 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         //缓存穿透的解决方案
         //Shop shop = queryWithPassThrough(id);
 
-        //缓存击穿的解决方案
-        Shop shop = queryWithMutex(id);
+        //互斥锁解决缓存击穿的方案
+        //Shop shop = queryWithMutex(id);
+
+        //逻辑过期方案解决缓存击穿
+        Shop shop = queryWithLogicExpire(id);
+        /*
+        逻辑过期不是用来查“全库冷热随机数据”的
+        它是专门服务于【提前预热的超级热点数据】的
+
+        上线前必须先“全量预热”
+        Redis 物理永不过期
+         */
+
         if (shop == null){
             return Result.fail("店铺不存在");
         }
@@ -151,6 +167,74 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         return shop;
     }
 
+    private Shop queryWithLogicExpire(Long id) {
+        if (id == null) {
+            return null;
+        }
+        String key = RedisConstants.CACHE_SHOP_KEY + id;
+        String shopJson = stringRedisTemplate.opsForValue().get(key);
+
+        if (StrUtil.isBlank(shopJson)) {
+            return null;
+        }
+        RedisData redisData = JSONUtil.toBean(shopJson, RedisData.class);
+        // 先把 getData() 强转成 JSONObject，再用 Hutool 转成 Shop
+        Shop data = JSONUtil.toBean((JSONObject) redisData.getData(), Shop.class);
+        LocalDateTime expireTime = redisData.getExpireTime();
+
+        // 判断是否逻辑过期：过期时间在当前时间之后，说明未过期，直接返回
+        if (expireTime.isAfter(LocalDateTime.now())) {
+            return data;
+        }
+
+        // 已过期，尝试获取互斥锁开启异步重建
+        String lockKey = RedisConstants.LOCK_SHOP_KEY + id;
+        boolean flag = tryLock(lockKey);
+        if (flag) {
+            try {
+                CACHE_REBUILD_EXECUTOR.submit(() -> {
+                    try {
+                        // 子线程内部做 Double Check，防止前一个线程刚重建完
+                        String latestJson = stringRedisTemplate.opsForValue().get(key);
+                        if (StrUtil.isNotBlank(latestJson)) {
+                            RedisData latestData = JSONUtil.toBean(latestJson, RedisData.class);
+                            if (latestData.getExpireTime().isAfter(LocalDateTime.now())) {
+                                return;
+                            }
+                        }
+                        // 重建缓存
+                        this.saveShopToRedis(id, 60L);
+                    } finally {
+                        // 无论走 Double Check 返回还是重建完成，锁唯一由子线程释放
+                        releaseLock(lockKey);
+                    }
+                });
+            } catch (Exception e) {
+                // 仅当提交线程池本身失败时，主线程兜底释放锁
+                releaseLock(lockKey);
+                throw new RuntimeException(e);
+            }
+        }
+        return data;
+    }
+
+    @Override
+    public void saveShopToRedis(Long id, Long expireSeconds) {
+        Shop shop = this.getById(id);
+        if (shop == null) {
+            return;
+        }
+        RedisData redisData = new RedisData();
+        redisData.setData(shop);
+        redisData.setExpireTime(LocalDateTime.now().plusSeconds(expireSeconds));
+
+        String redisDataJson = JSONUtil.toJsonStr(redisData);
+        stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY + id, redisDataJson);
+    }
+
+
+
+
     private boolean tryLock(String key) {
         if (key == null) {
             return false;
@@ -164,6 +248,9 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     private void releaseLock(String key){
         stringRedisTemplate.delete(key);
     }
+
+    //开启线程池
+    private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
 }
 
 
