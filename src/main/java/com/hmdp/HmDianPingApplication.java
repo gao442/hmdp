@@ -3,6 +3,8 @@ package com.hmdp;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.EnableAspectJAutoProxy;
+
 /*
 导入依赖
 在 pom.xml 中引入 mybatis-plus-spring-boot3-starter（以及分页所需的 mybatis-plus-jsqlparser）。
@@ -21,6 +23,7 @@ Service 层继承 IService 和 ServiceImpl
  */
 @MapperScan("com.hmdp.mapper")
 @SpringBootApplication
+@EnableAspectJAutoProxy(exposeProxy = true)
 public class HmDianPingApplication {
 
     public static void main(String[] args) {
