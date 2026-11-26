@@ -47,7 +47,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if (LocalDateTime.now().isBefore(voucher.getBeginTime())){
             return Result.fail("活动还没开始");
         }
-        if (voucher.getStock()<1){
+        Integer stock = voucher.getStock();
+        if (stock<1){
             return Result.fail("库存不足");
         }
 
@@ -55,6 +56,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 //mysql会强行加锁，保证一致性
                 .setSql("stock = stock - 1")
                 .eq("voucher_id", voucherId)
+                .gt("stock",0)
                 .update();
         if (!success) {
             return Result.fail("库存不足");
