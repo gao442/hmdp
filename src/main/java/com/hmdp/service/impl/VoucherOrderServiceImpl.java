@@ -8,9 +8,11 @@ import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import jakarta.annotation.Resource;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +37,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private ISeckillVoucherService seckillVoucherService;
     @Resource
     private RedisIdWorker redisIdWorker;
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -81,19 +85,38 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         写 this 或 .class：括号里的东西永远不变（全网只有 1 个），
         所以把所有不同用户全锁在了一起
          */
-        synchronized (userId.toString().intern()) {
-            //代理为什么是这个类型的对象
-            /*
-            Spring 造出来的这个代理对象 都一定会实现你的 IVoucherOrderService 接口
-            兄弟不能强转成兄弟，只能转成共同的接口 IVoucherOrderService‘
+        /*
+        利用jvm内部的锁监视器实现锁机制
+         */
+//        synchronized (userId.toString().intern()) {
+//            //代理为什么是这个类型的对象
+//            /*
+//            Spring 造出来的这个代理对象 都一定会实现你的 IVoucherOrderService 接口
+//            兄弟不能强转成兄弟，只能转成共同的接口 IVoucherOrderService‘
+//
+//              所以自己内部直接 this 调自己时，相当于绕开了外面的动态代理对象
+//
+//             */
+//            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+//            return proxy.createVoucherOrder(voucherId);
+//        }
+        /*
+        proxy是外面的壳，获取proxy是为了从里面"跳出去"，再从壳的入口进来
 
-              所以自己内部直接 this 调自己时，相当于绕开了外面的动态代理对象
+         */
+        SimpleRedisLock lock = new SimpleRedisLock("voucherOrder"+userId,stringRedisTemplate);
 
-             */
+        boolean flag = lock.tryLock(500L);
+        if (!flag){
+            return Result.fail("每个人只能下单一次");
+            //拿不到锁就直接返回失败（非阻塞）
+        }
+        try {
             IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
             return proxy.createVoucherOrder(voucherId);
+        } finally {
+            lock.unLock();
         }
-
     }
 
     @Transactional
