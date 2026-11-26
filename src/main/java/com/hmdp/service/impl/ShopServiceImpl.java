@@ -37,19 +37,24 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         //Shop shop = queryWithPassThrough(id);
 
         //互斥锁解决缓存击穿的方案
-        //Shop shop = queryWithMutex(id);
+        Shop shop = cacheClient.queryWithMutex(id,
+                RedisConstants.CACHE_SHOP_KEY,
+                Shop.class,
+                this::getById,
+                60L,
+                TimeUnit.SECONDS);
 
         //逻辑过期方案解决缓存击穿
         //Shop shop = queryWithLogicExpire(id);
 
-        Shop shop = cacheClient.<Shop, Long>queryWithLogicExpire(
-                id,
-                RedisConstants.CACHE_SHOP_KEY,
-                Shop.class,
-                60L,
-                TimeUnit.SECONDS,
-                this::getById
-        );
+//        Shop shop = cacheClient.<Shop, Long>queryWithLogicExpire(
+//                id,
+//                RedisConstants.CACHE_SHOP_KEY,
+//                Shop.class,
+//                60L,
+//                TimeUnit.SECONDS,
+//                this::getById
+//        );
         /*
         逻辑过期不是用来查“全库冷热随机数据”的
         它是专门服务于【提前预热的超级热点数据】的
