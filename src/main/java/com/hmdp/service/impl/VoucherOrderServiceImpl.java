@@ -11,12 +11,18 @@ import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import jakarta.annotation.Resource;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -39,55 +45,91 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private RedisIdWorker redisIdWorker;
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private RedissonClient redissonClient;
+
+    private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+
+    static {
+        SECKILL_SCRIPT = new DefaultRedisScript<>();
+        SECKILL_SCRIPT.setLocation(new ClassPathResource("seckill.lua"));
+        SECKILL_SCRIPT.setResultType(Long.class);
+    }
 
     @Override
     public Result seckillVoucher(Long voucherId) {
-        if (voucherId == null){
-            return Result.fail("订单id不存在");
-        }
-        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
-        if (voucher == null){
-            return Result.fail("活动不存在");
-        }
-        if (LocalDateTime.now().isAfter(voucher.getEndTime())){
-            return Result.fail("活动已经结束");
-        }
-        if (LocalDateTime.now().isBefore(voucher.getBeginTime())){
-            return Result.fail("活动还没开始");
-        }
-        Integer stock = voucher.getStock();
-        if (stock<1){
-            return Result.fail("库存不足");
-        }
         Long userId = UserHolder.getUser().getId();
-        /*
-        1. 先加锁 → 2. 开启事务 → 3. 查单 + 扣库存 + 插订单 →
-        4. 提交事务（真正写进 MySQL） → 5. 最后才释放锁
 
-        必须得先加上锁再去开启事务提交事务，最后在解开锁
-         */
+        Long flag = stringRedisTemplate.execute(
+                SECKILL_SCRIPT,
+                Collections.emptyList(),
+                voucherId.toString(), userId.toString());
 
-        /*
-        代码里双引号写死的 "xxx" → 自动在常量池
+        int ret = flag.intValue();
+        if (ret != 0){
+            if (ret == 1){
+                return Result.fail("库存不足");
+            }else {
+                return Result.fail("重复下单");
+            }
+        }
+        Long orderId = redisIdWorker.nextId("order");
+        //TODO 加入阻塞队列
 
-        但是
-        底层是现场 new String(...)；
-        new String("1010")：显式 new 出来的
-        带变量的字符串拼接
-        这三种不在字符串常量池，因此每次去字符串常量池取出来的字符串都是不同的地址
-        .intern() 的唯一作用：就是把外面动态生成的字符串，强行送进字符串常量池去比对
-        池子里有了就直接拿池子里唯一的那一份，保证拿到的地址是一样的
-         */
-        /*
-        this是指serviceimp的实例化对象
-        全局只有一个serviceimp的实例化对象
 
-        写 this 或 .class：括号里的东西永远不变（全网只有 1 个），
-        所以把所有不同用户全锁在了一起
-         */
-        /*
-        利用jvm内部的锁监视器实现锁机制
-         */
+        return Result.ok(orderId);
+
+    }
+
+
+//    @Override
+//    public Result seckillVoucher(Long voucherId) {
+//        if (voucherId == null){
+//            return Result.fail("订单id不存在");
+//        }
+//        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
+//        if (voucher == null){
+//            return Result.fail("活动不存在");
+//        }
+//        if (LocalDateTime.now().isAfter(voucher.getEndTime())){
+//            return Result.fail("活动已经结束");
+//        }
+//        if (LocalDateTime.now().isBefore(voucher.getBeginTime())){
+//            return Result.fail("活动还没开始");
+//        }
+//        Integer stock = voucher.getStock();
+//        if (stock<1){
+//            return Result.fail("库存不足");
+//        }
+//        Long userId = UserHolder.getUser().getId();
+//        /*
+//        1. 先加锁 → 2. 开启事务 → 3. 查单 + 扣库存 + 插订单 →
+//        4. 提交事务（真正写进 MySQL） → 5. 最后才释放锁
+//
+//        必须得先加上锁再去开启事务提交事务，最后在解开锁
+//         */
+//
+//        /*
+//        代码里双引号写死的 "xxx" → 自动在常量池
+//
+//        但是
+//        底层是现场 new String(...)；
+//        new String("1010")：显式 new 出来的
+//        带变量的字符串拼接
+//        这三种不在字符串常量池，因此每次去字符串常量池取出来的字符串都是不同的地址
+//        .intern() 的唯一作用：就是把外面动态生成的字符串，强行送进字符串常量池去比对
+//        池子里有了就直接拿池子里唯一的那一份，保证拿到的地址是一样的
+//         */
+//        /*
+//        this是指serviceimp的实例化对象
+//        全局只有一个serviceimp的实例化对象
+//
+//        写 this 或 .class：括号里的东西永远不变（全网只有 1 个），
+//        所以把所有不同用户全锁在了一起
+//         */
+//        /*
+//        利用jvm内部的锁监视器实现锁机制
+//         */
 //        synchronized (userId.toString().intern()) {
 //            //代理为什么是这个类型的对象
 //            /*
@@ -100,24 +142,25 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 //            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
 //            return proxy.createVoucherOrder(voucherId);
 //        }
-        /*
-        proxy是外面的壳，获取proxy是为了从里面"跳出去"，再从壳的入口进来
-
-         */
-        SimpleRedisLock lock = new SimpleRedisLock("voucherOrder"+userId,stringRedisTemplate);
-
-        boolean flag = lock.tryLock(500L);
-        if (!flag){
-            return Result.fail("每个人只能下单一次");
-            //拿不到锁就直接返回失败（非阻塞）
-        }
-        try {
-            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
-            return proxy.createVoucherOrder(voucherId);
-        } finally {
-            lock.unLock();
-        }
-    }
+//        /*
+//        proxy是外面的壳，获取proxy是为了从里面"跳出去"，再从壳的入口进来
+//
+//         */
+//        //SimpleRedisLock lock = new SimpleRedisLock("voucherOrder"+userId,stringRedisTemplate);
+//        RLock lock = redissonClient.getLock("voucherOrder:" + userId);
+//
+//        boolean flag = lock.tryLock();
+//        if (!flag){
+//            return Result.fail("每个人只能下单一次");
+//            //拿不到锁就直接返回失败（非阻塞）
+//        }
+//        try {
+//            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+//            return proxy.createVoucherOrder(voucherId);
+//        } finally {
+//            lock.unlock();
+//        }
+//    }
 
     @Transactional
     public Result createVoucherOrder(Long voucherId) {
